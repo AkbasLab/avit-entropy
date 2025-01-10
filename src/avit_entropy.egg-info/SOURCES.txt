@@ -1,0 +1,11 @@
+LICENSE
+README.md
+setup.py
+src/avit_entropy/__init__.py
+src/avit_entropy/estimator.py
+src/avit_entropy/utils.py
+src/avit_entropy.egg-info/PKG-INFO
+src/avit_entropy.egg-info/SOURCES.txt
+src/avit_entropy.egg-info/dependency_links.txt
+src/avit_entropy.egg-info/requires.txt
+src/avit_entropy.egg-info/top_level.txt
