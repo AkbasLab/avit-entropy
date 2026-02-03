@@ -1,430 +1,333 @@
-"""
-Misc. functions 
-
-Author: Quentin Goss
-"""
 import numpy as np
 import pickle
-from sim_bug_tools.constants import *
-from sim_bug_tools.structs import Point
-import re
-from itertools import takewhile, repeat
-from numpy import ndarray, float64
-from rtree.index import Index
+import shapely.geometry
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib as mpl
+from matplotlib.axes import Axes
+import pandas as pd
 
-def as_position(position: np.ndarray) -> np.ndarray:
+def mps2kph(mps : float) -> float:
+    return 3.6 * mps
+
+def kph2mps(kph : float) -> float:
+    return kph/3.6
+
+def deg2rad(deg : float) -> float:
+    return deg * np.pi/180
+
+def project(a : float, b : float, n : float, inc : float = None) -> float:
     """
-    Checks if the given position is valid. If so, returns a np.ndarray.
-
-    -- Parameter --
-    position : list or np.ndarray
-        Position
-
-    -- Return --
-    position as an np.ndarray if valid. Otherwise throws a type error
+    Project a normal val @n between @a and @b with an discretization 
+    increment @inc.
     """
-    if isinstance(position, list):
-        return np.array(position)
-    elif isinstance(position, np.ndarray):
-        return position
-    else:
-        raise TypeError(
-            "Position is %s instead of %s" % (type(position), type(np.ndarray))
-        )
+    assert n >= 0 and n <= 1
+    assert b >= a
 
-
-def denormalize(a: np.float64, b: np.float64, x: np.float64) -> np.float64:
-    """
-    Maps a normal value x between values a and b
-
-    -- Parameters --
-    a : float or np.ndarray
-        Lower bound
-    b : float or np.ndarray
-        Upper bound
-    x : float or np.ndarray
-        Normal value between 0 and 1
-
-    -- Return --
-    float or np.ndarray
-        x applied within the range of a and b
-    """
-    return x * (b - a) + a
-
-
-def project(a: float, b: float, n: float, by: float = None) -> float:
-    """
-    Project a normal value @x between @a and @b.
-
-     -- Parameters --
-    a : float or np.ndarray
-        Lower bound
-    b : float or np.ndarray
-        Upper bound
-    n : float or np.ndarray
-        Normal value between 0 and 1
-    by : float
-        Granularity of range
-
-    -- Return --
-    float or np.ndarray
-        x applied within the range of a and b
-    """
-    if not (b > a):
-        raise ValueError
-
-    # Continous
-    if by is None:
+    # If no increment is provided, return the projection
+    if inc is None:
         return n * (b - a) + a
 
-    #  Discrete
-    norm_interval = by / (b - a)
-    interval = np.round(n / norm_interval, decimals=0)
-    return a + interval * by
+    # Otherwise, round to the nearest increment
+    n_inc = (b-a) / inc
+    
+    x = np.round(n_inc * n)
+    return min(a + x*inc, b)
 
-
-def pretty_dict(d: dict, indent: np.int32 = 0):
+def n_intervals(a : float, b : float, n : int) -> list[float]:
     """
-    Pretty print python dictionary
-
-    -- Parameters --
-    d : dictionary
-        Dictionary to print
-    indent : int
-        Number of spaces in indent
+    Provides values for @n intervals between @a and @b
     """
-    for key, value in d.items():
-        print(" " * indent + str(key))
-        if isinstance(value, dict):
-            pretty_dict(value, indent + 1)
-        else:
-            print(" " * (indent + 1) + str(value))
+    assert a != b
+    nums = [i for i in range(n)]
+    return [project(a, b, num/(n-1)) for num in nums]
 
+def distance_to(x0, y0, x1, y1) -> float:
+    return np.sqrt((x1-x0)**2+(y1-y0)**2)
 
-def save(obj, fn: str):
-    """
-    Save an object to file.
-
-    -- Parameters --
-    obj : python object
-        Object to save
-    fn : str
-        Filename
-    """
+def save(data, fn : str):
     with open(fn, "wb") as f:
-        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    return
+
+def load(fn : str):
+    with open(fn, "rb") as f:
+        return pickle.load(f)
+    
+def project_point(
+        x : float, 
+        y : float, 
+        distance : float, 
+        angle_radians : float
+    ) -> list[float, float]:
+    """
+    Projects an @x,@y point @distance by @angle_radians
+
+    Returns new x,y point.
+    """
+    new_x = x + distance * np.cos(angle_radians)
+    new_y = y + distance * np.sin(angle_radians)
+    return new_x, new_y
+
+def linestring2polygon(
+        linestring : shapely.geometry.LineString, 
+        width : float
+    ) -> shapely.geometry.Polygon:
+    """
+    Transforms a @linestring into a Polygon given a @width
+    by buffering the LineString with the given width to create a polygon
+    """
+    return linestring.buffer(width / 2, cap_style=2, join_style=2)
+
+
+def gaussian_pdf(x, mu :float = 0, sigma : float = 1):
+    """
+    Calculate the probability density function (PDF) of a Gaussian distribution at point x.
+    
+    Parameters:
+        x: float or array-like, the point(s) at which to evaluate the PDF
+        mu: float, the mean of the Gaussian distribution
+        sigma: float, the standard deviation of the Gaussian distribution
+        
+    Returns:
+        pdf_value: float or array-like, the value(s) of the PDF at point(s) x
+    """
+    pdf_value = 1 / (np.sqrt(2 * np.pi) * sigma) * np.exp(-0.5 * ((x - mu) / sigma)**2)
+    return pdf_value
+
+def entropy(px : float) -> float:
+    """
+    PDF of value x.
+    returns entropy for one case.
+    """
+    return -px * np.log2(px)
+
+def closest_polygon(
+        point : shapely.geometry.Point, 
+        multipolygon : shapely.geometry.multipolygon.MultiPolygon
+    ) -> shapely.geometry.Polygon:
+    """
+    Finds the closest subpolygon in @multipolygon to @point
+    """
+    distances = [point.distance(poly.centroid) for poly in multipolygon]
+    closest = multipolygon[distances.index(min(distances))]
+    return closest
+
+def lattice_plot(
+        df : pd.DataFrame,
+        features : list[str],
+        score_feat : str,
+        fig_size : list[float, float],
+        dpi : int,
+        img_fn : str = "",
+        trim : float = 0,
+        rasterized : bool = False
+    ):
+    """
+    Generates a lattice plot from a dataframe.
+
+    :: Parameters ::
+    df : pd.Dataframe
+        Dataframe with features and scores.
+    features : list[str]
+        List of feature names
+    score_feat : str
+        Score feature name
+    fig_size : list[float, float]
+        Figure width and height in inches
+    dpi : int
+        Dots per inch
+    img_fn : str
+        Filename to save img. Reccomended is .png or .pdf
+    trim : float
+        Trim the data by p proportion of outliers.
+    """
+    assert trim >= 0 and trim < 1
+    if trim > 0:
+        df = remove_outliers(df, trim)
+
+    # Clear plot
+    plt.clf()
+
+    # Colors
+    cmap_id = "gist_heat"
+    cmap = mpl.colormaps[cmap_id]
+    
+    # Normalize score
+    scores_norm = (df[score_feat]-df[score_feat].min())\
+                    /(df[score_feat].max()-df[score_feat].min())
+    df["color"] = scores_norm.apply(cmap)
+    a = df[score_feat].min()
+    b = df[score_feat].max()
+    norm_ticks = [.0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1.]
+    score_ticks = [np.round((b-a)*x + a, decimals=2) for x in norm_ticks]
+    
+    # Make the plots
+    plt.rc("font", size=8)
+    fig = plt.figure(figsize=fig_size, dpi=dpi)
+    nrow = len(features)
+    ncol = len(features)
+    for irow, y_feat in enumerate(features):
+        for icol, x_feat in enumerate(features):
+            ax : Axes = plt.subplot2grid((ncol, nrow), (irow, icol))
+
+            # Setup labels
+            is_left = icol == 0
+            is_bottom = irow == nrow - 1
+
+            ax.tick_params(
+                left = is_left, 
+                right = False , 
+                labelleft = is_left , 
+                labelbottom = is_bottom, 
+                bottom = is_bottom
+            )
+
+            if is_left:
+                ax.set_ylabel(y_feat)
+            if is_bottom:
+                ax.set_xlabel(x_feat)
+
+            # Skip same plot
+            if x_feat == y_feat:
+                ax.set_facecolor("grey")
+                continue
+
+            # Make scatter plot
+            ax.scatter(
+                df[x_feat],
+                df[y_feat],
+                color = df["color"],
+                marker=",",
+                s=(72/dpi)**2,
+                rasterized = rasterized
+            )
+
+            ax.set_facecolor("lightgray")
+            continue
+        continue
+
+    
+    # plt.tight_layout()
+    plt.subplots_adjust(hspace=0,wspace=0)
+    
+
+    # Put the colorbar on the grid
+    cbar_ax = fig.add_axes([0.91, 0.12, 0.01, .75])
+    cb = fig.colorbar(
+        mpl.cm.ScalarMappable(
+            norm=mpl.colors.Normalize(0, 1), 
+            cmap=cmap_id
+        ),
+        cax=cbar_ax, 
+        orientation="vertical",
+        label=score_feat,
+    )
+    cb.set_ticks(norm_ticks)
+    cb.set_ticklabels(score_ticks)
+
+    
+    if not img_fn == "":
+        plt.savefig(img_fn, bbox_inches="tight")
+    return
+
+def remove_outliers(df : pd.DataFrame, p : float):
+    """
+    Remove a proportion p of outliers from a dataframe @df
+    """
+    assert p > 0 and p < 1.0
+    # Calculate z-scores for numerical columns
+    z_scores = np.abs((df - df.mean()) / df.std())
+    
+    # Compute the maximum z-score across all columns for each row
+    max_z_scores = z_scores.max(axis=1)
+    
+    # Define a threshold for outliers (e.g., z-score greater than 3)
+    threshold = max_z_scores.quantile(1 - p)
+    
+    # Remove rows with z-scores exceeding the threshold
+    cleaned_df = df[max_z_scores <= threshold]
+    
+    return cleaned_df
+
+def scatter_grid_plot(
+        df : pd.DataFrame,
+        features : list[str],
+        score_feat : str,
+        fig_size : list[float,float] = [7,7],
+        dpi : float = 300,
+        img_fn : str = "out/rawr.png",
+        ncol : int = None,
+        nrow : int = None
+    ):
+    """
+    Generates a lattice plot from a dataframe.
+
+    :: Parameters ::
+    df : pd.Dataframe
+        Dataframe with features and scores.
+    features : list[str]
+        List of feature names
+    score_feat : str
+        Score feature name
+    fig_size : list[float, float]
+        Figure width and height in inches
+    dpi : int
+        Dots per inch
+    img_fn : str
+        Filename to save img. Reccomended is .png or .pdf
+    """
+    
+    
+    fig = plt.figure(figsize=fig_size, dpi=dpi)
+    
+    if ncol is None and nrow is None:
+        ncol = 2
+    if not (ncol is None):
+        nrow = int(np.ceil(len(features)/ncol))
+    elif not (nrow is None):
+        ncol = int(np.ceil(len(features)/nrow))
+    else:
+        raise NotImplementedError
+    icol = 0
+    irow = 0
+    for feat in features:
+        # print("col:", icol, "row:", irow)
+        ax : Axes = plt.subplot2grid((nrow, ncol), (irow, icol))
+
+        # Setup labels
+        is_bottom = irow == nrow - 1
+
+        ax.scatter(
+            df[feat],
+            df[score_feat],
+            color = "black",
+            marker = "."
+        )
+
+        ax.set_xlabel(feat)
+        ax.set_ylabel(score_feat)
+
+        icol += 1
+        if icol >= ncol:
+            irow += 1
+            icol = 0
+        
+        continue
+
+    
+    plt.tight_layout()
+
+
+    if not img_fn == "":
+        plt.savefig(img_fn, bbox_inches="tight")
     return
 
 
-def load(fn: str):
-    """
-    Load a python object from a file
 
-    --- Parameters --
-    fn : str
-        Filename
+def _test():
+    return
 
-    --- Return ---
-    unpickled python object.
-    """
-    with open(fn, "rb") as f:
-        return pickle.load(f)
-
-
-def transposeList(lst: list) -> list:
-    return np.asarray(lst).T.tolist()
-
-
-def convert_to_tuples(array):
-    return tuple(map(lambda x: tuple(x), array))
-
-
-def get_column(array, index):
-    return np.array(map(lambda ele: ele[index], array))
-
-
-## Dictionary Tools ##
-
-
-def dictSubtract(a: dict, b: dict) -> dict:
-    "Set subtraction between dictionary objects."
-    return {key: value for key, value in a.items() if key not in b}
-
-
-def dictIntersect(a: dict, b: dict):
-    "Set intersection between dictionary objects."
-    return {key: value for key, value in a.items() if key in b}
-
-
-def sortByDict(a: dict, b: dict) -> dict:
-    """
-    Sorts A entries by the values in B, where A's keys are a subset of B's.
-    Example:
-        a = {'a': 5, 'b': 23, 'c': 2}
-        b = {'c': 0, 'a': 4, 'b': 2}
-
-        c = sortByDict(a, b).items() = [('c', 2), ('b', 23), ('a', 5)]
-
-    Args:
-        a (dict)
-        b (dict)
-
-    Returns:
-        dict: a (sorted)
-    """
-    result = {}
-
-    # Sort the dectionary by value
-    keys = list(dict(sorted(b.items(), key=lambda x: x[1])).keys())
-    for i in range(len(a)):
-        key = keys[i]
-        result[key] = a[key]
-
-    return result
-
-
-def prime(n: int) -> np.int32:
-    """
-    Returns the n-th position prime number.
-
-    -- Parameter --
-    n : int
-        n-th position. Where 1- < n < 1601.
-
-    -- Return --
-    n-th position prime number
-    """
-    prime_max = 1600
-    if n < 0 or n > 1600:
-        raise ValueError("%d-th value is not within 0 < n < 1601")
-    return np.int32(PRIME_VECTOR[n])
-
-
-def is_prime(x: np.int32) -> bool:
-    """
-    Checks if x is in the first 1600 prime numbers.
-
-    -- Parameter --
-    x : np.int32
-        Any number
-
-    -- Return --
-    Whether x is in the first 1600 prime numbers.
-    """
-    return x in PRIME_VECTOR_SET
-
-
-def filter_unique(array: list[np.ndarray]) -> list[np.ndarray]:
-    """
-    Filters unique values from a numpy array
-
-    -- Parameter --
-    array : list[np.ndarray]
-        List of numpy arrays.
-
-    -- Return --
-    list[np.ndarray]
-        The unique arrays within array.
-    """
-    unique, counts = np.unique(np.sort(np.array(array)), axis=0, return_counts=True)
-    return unique[counts == 1]
-
-
-def parse_float(s: str) -> float:
-    return float(re.findall(r"-?\d+\.?\d*", s)[0])
-
-
-def parse_int(s: str) -> int:
-    return int(parse_float(s))
-
-
-def flatten_dicts(dicts: list[dict]) -> dict:
-    """
-    Flatten multiple dicts by keys
-    """
-    for i in range(1, len(dicts)):
-        for key, value in dicts[i].items():
-            dicts[0][key] = value
-    return dicts[0]
-
-
-def rawincount(filename: str) -> int:
-    """
-    Returns the number of \n in a file.
-
-    -- Parameters --
-    filename : str
-        Filename to count newline characters
-
-    -- Return --
-    int
-        Number of newline charachters in file.
-    """
-    with open(filename, "rb") as f:
-        bufgen = takewhile(lambda x: x, (f.raw.read(1024 * 1024) for _ in repeat(None)))
-        return sum(buf.count(b"\n") for buf in bufgen)
-
-
-def find_sample_by_depth(
-    boundary: list[tuple[Point, ndarray]],
-    start_i: int,
-    index: Index,
-    d: float64,
-    is_target: bool = True,
-    threshold: float64 = 0.05,
-):
-    """
-    Find an sample a certain distance from or into an envelope.
-
-    Attempts to ensure that the sample is
-
-    Args:
-        boundary (list[tuple[Point, ndarray]]): The list of bounday nodes.
-        i_start (int): The index of the node to start from.
-        d (float64): The jump size of each step.
-        is_target (bool): If True, it will sample into the envelope, otherwise.
-            it will sample away from the envelope.
-        threshold (float64): Percent error allowed from d [defaults to 5%]
-
-    Returns None if the sample was not far enough away from other boundary
-    points; otherwise, returns the desired point.
-    """
-    b, n = boundary[start_i]
-    p = b - Point(n * d) if is_target else b + Point(n * d)
-
-    b_near, _ = boundary[index.nearest(p, 1).__next__()]
-
-    if p.distance_to(b_near) < d * (1 - threshold):
-        return None
-
-    return p
-
-
-def k_nearest_density(
-    boundary: list[tuple[Point, ndarray]], index: Index, k: int, max_distance: float64
-) -> float64:
-    """
-    Finds the average distance per point. This is an analogue to density,
-    although not the same.
-
-    Args:
-        boundary (list[tuple[Point, ndarray]]): The list of boundary nodes.
-        index (Index): The boundary R-Tree
-        k (int): The (max) number of neighbors to consider
-        max_distance (float64): The maximum distance that points can be considered.
-
-    Returns:
-        float64: The average distance per point
-    """
-    if len(boundary) == 0:
-        return None
-
-    density = 0
-
-    for b, _ in boundary:
-        ids = index.nearest(b, k + 1)  # +1 to ignore b's self
-
-        tmp = 0
-        for id in ids:
-            tmp += b.distance_to(boundary[id])
-
-        density += tmp / len(ids)
-
-    return density / len(boundary)
-
-
-def find_intermediate(p: Point, nodes: tuple[Point, ndarray]):
-    """
-    Using a collection of neighboring nodes, an average of those nodes is
-    determined via a weighted sum. They are weighted based on their distance,
-    where the closest node will be given the greatest preference.
-
-    Args:
-        p (Point): The point which is determining the weights
-        nodes (tuple[Point, ndarray]): The boundary nodes that neighbor one another
-
-    Returns:
-        tuple[Point, ndarray]: The virtual boundary node that is the average of
-            the neighbors, weighted according to their distance from p.
-    """
-    dists: float64 = [p.distance_to(b) for b, n in nodes]
-    total = sum(dists)
-    weights: float64 = [p.distance_to(b) / total for b, n in nodes]
-
-    new_b = Point.zeros(len(p))
-    new_n = np.zeros(new_b.array.shape)
-    for weight, node in zip(weights, nodes):
-        b, n = node
-        new_b += Point(b * weight)
-        new_n += n * weight
-
-    return new_b, new_n
-
-
-def predict_class(
-    p: Point,
-    boundary: list[tuple[Point, ndarray]],
-    err: float64,
-    threshold: float64,
-    k: int = 3,
-    rt_index: Index = None,
-):
-    """
-    Using a list of boundary nodes, this algorithm predicts whether or not a
-    given sample lies within or without the envelope and if that point lies on
-    the boundary. The k-value represents k-nearest neighboring boundary nodes,
-    which are used to improve the estimation.
-
-    Args:
-        p (Point): The point to be (predictively) classified boundary
-        (list[tuple[Point, ndarray]]): The list of boundary nodes err (float64):
-        How much error to expect from the boundary threshold (float64): The max
-        distance k-neighbors can be from initial
-            boundary point.
-        k (int, optional): The number of neighboring boundary points to improve
-            estimations with. Defaults to 3.
-        rt_index (Index, Optional): The pre-loaded R-Tree index that stores the
-            positional information of the boundary nodes (faster than rebuilding
-            it each time, if already created.)
-
-    Returns:
-        tuple[bool, meta-data]: Returns the result of being a target-value or
-        not followed by meta-data. The meta-data includes [is_on_boundary,
-        virtual_boundary_node, neighbors]. The virtual_boundary_node is
-        constructed by a weighted sum of the neighbors. Read find_intermediate
-        for more info.
-    """
-    # find nearest boundary point node.
-    node_ids = tuple(rt_index.nearest(p, k))
-    nearest = boundary[node_ids[0]]
-
-    # Eliminate distant boundary points
-    neighbors = [
-        boundary[id]
-        for id in node_ids
-        if nearest[0].distance_to(boundary[id][0]) <= threshold
-    ]
-    b, n = find_intermediate(p, neighbors)
-
-    rel_pos_vector = (p - b).array
-
-    # Dot product between n and displacement from b reveals which side of the
-    # boundary we are on. Positive values are outside, negative are inside.
-    alignment = np.dot(rel_pos_vector, n)
-
-    is_in_envelope = alignment <= 0
-
-    # If we are inside the envelope AND within error margin of the boundary...
-    is_boundary_point = is_in_envelope and np.linalg.norm(rel_pos_vector) <= err
-
-    return is_in_envelope, (is_boundary_point, (b, n), neighbors)
-
-
-def random_point_in_sphere(min_r: float64, max_r: float64, loc: Point):
-    "Another way to generate a sample. Helps with testing high-dimension hyperspheres"
-    ndims = len(loc)
-    v = np.random.rand(ndims)
-    v /= np.linalg.norm(v)
-    rand_r = np.random.rand(1)[0] * (max_r - min_r) + min_r
-    return Point(v * rand_r) + loc
+if __name__ == "__main__":
+    _test()
